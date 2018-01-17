@@ -1,0 +1,360 @@
+
+CLASS lcl_ftp DEFINITION.
+
+  PUBLIC SECTION.
+    METHODS:
+      handle_connect
+        IMPORTING imw_ftp_config TYPE zta_ftpconfig
+        EXPORTING ex_hdl         TYPE i,
+      handle_disconnect
+        IMPORTING imw_ftp_config TYPE zta_ftpconfig,
+      handle_put
+        IMPORTING im_hdl          TYPE i
+                  im_work_file    TYPE char200
+        EXPORTING exi_text        TYPE truxs_t_text_data
+                  ex_success_flag TYPE abap_bool,
+      handle_get_list
+        IMPORTING im_hdl   TYPE i
+        EXPORTING exi_list TYPE truxs_t_text_data,
+      handle_open_dir
+        IMPORTING im_path  TYPE char100
+                  im_hdl   TYPE i
+        EXPORTING exi_text TYPE truxs_t_text_data,
+      handle_file_content
+        IMPORTING im_file_name TYPE text250
+                  im_hdl       TYPE i
+        EXPORTING exi_CONTENT     TYPE truxs_t_text_data,
+      handle_file_processed
+        IMPORTING im_file_name   TYPE text250
+                  im_hdl         TYPE i
+                  imw_ftp_config TYPE zta_ftpconfig
+        EXPORTING exi_data       TYPE truxs_t_text_data,
+      check_file_name_format
+        IMPORTING
+          im_file_name          TYPE text250
+        EXPORTING
+          ex_file_name          TYPE text250
+          ex_is_resp_id_billing TYPE abap_bool
+          ex_is_acknowledge     TYPE abap_bool.
+
+ENDCLASS.
+
+CLASS lcl_ftp IMPLEMENTATION.
+
+  METHOD handle_connect.
+    DATA: lw_ftpconfig TYPE zta_ftpconfig.
+    DATA: lv_user(30)         TYPE c, "user name of ftp server
+          lv_pwd(30)          TYPE c, "password of ftp server
+          lv_host(64)         TYPE c, "VALUE '10.0.92.10 9099', "ip address of FTP server
+          lv_dest             TYPE rfcdest, "Background RFC destination
+          lv_cmd(80)          TYPE c,
+          lv_folder_path(100) TYPE c,
+          lv_slen             TYPE i,
+          c_key               TYPE i VALUE 26101957,
+          w_hdl               TYPE i,
+          lv_line(100)        TYPE c.
+
+    MOVE                imw_ftp_config TO lw_ftpconfig.
+    lv_user = lw_ftpconfig-cuser.
+    lv_pwd = lw_ftpconfig-cpassword.
+    CONCATENATE lw_ftpconfig-chost lw_ftpconfig-iport
+    INTO lv_host SEPARATED BY space.
+    CONDENSE lv_host.
+    lv_dest = lw_ftpconfig-rfc_destination.
+    lv_folder_path = lw_ftpconfig-cfolder.
+
+*http_scramble: used to scramble the password provided into a FORMAT, which is been recognized by SAP.
+    SET EXTENDED CHECK OFF.
+    lv_slen = strlen( lv_pwd ).
+
+    CALL FUNCTION 'HTTP_SCRAMBLE'
+      EXPORTING
+        source      = lv_pwd
+        sourcelen   = lv_slen
+        key         = c_key
+      IMPORTING
+        destination = lv_pwd.
+
+* To connect to the server using ftp
+    CALL FUNCTION 'FTP_CONNECT'
+      EXPORTING
+        user            = lv_user
+        password        = lv_pwd
+        host            = lv_host
+        rfc_destination = lv_dest
+      IMPORTING
+        handle          = w_hdl
+      EXCEPTIONS
+        not_connected   = 1
+        OTHERS          = 2.
+    IF sy-subrc <> 0.
+      MESSAGE 'FTP not connect. Please check your connection' TYPE 'E'.
+    ENDIF.
+
+    ex_hdl = w_hdl.
+  ENDMETHOD.
+
+  METHOD handle_disconnect.
+    DATA: lw_ftpconfig TYPE zta_ftpconfig,
+          w_hdl        TYPE i.
+    MOVE imw_ftp_config TO lw_ftpconfig.
+
+    CALL FUNCTION 'FTP_DISCONNECT'
+      EXPORTING
+        handle = w_hdl.
+
+*RFC_CONNECTION_CLOSE:This is used to disconnect the RFC connection between SAP and other system.
+    CALL FUNCTION 'RFC_CONNECTION_CLOSE'
+      EXPORTING
+        destination = lw_ftpconfig-rfc_destination
+      EXCEPTIONS
+        OTHERS      = 1.
+  ENDMETHOD.
+
+  METHOD handle_get_list.
+
+    DATA: li_result        TYPE truxs_t_text_data,
+          lw_result        LIKE LINE OF li_result,
+          li_list_filename TYPE truxs_t_text_data,
+          lw_list_filename LIKE LINE OF li_list_filename.
+    REFRESH: li_result[].
+
+    CALL FUNCTION 'FTP_COMMAND'
+      EXPORTING
+        handle        = im_hdl
+        command       = 'ls'
+      TABLES
+        data          = li_result
+      EXCEPTIONS
+        tcpip_error   = 1
+        command_error = 2
+        data_error    = 3
+        OTHERS        = 4.
+    IF sy-subrc <> 0.
+*      RAISE not_connect .
+      EXIT.
+    ENDIF.
+    DELETE li_result[] INDEX 1.
+
+    REFRESH: li_list_filename[].
+    LOOP AT li_result INTO lw_result FROM 4.
+      AT LAST.
+        CONTINUE.
+      ENDAT.
+      MOVE lw_result TO lw_list_filename.
+      APPEND lw_list_filename TO li_list_filename.
+    ENDLOOP.
+    exi_list[] = li_list_filename[].
+
+  ENDMETHOD.
+
+  METHOD handle_open_dir.
+
+    DATA: lv_folder_path(100) TYPE c,
+          lv_cmd(80)          TYPE c,
+          w_hdl               TYPE i.
+    DATA: li_text TYPE truxs_t_text_data.
+
+    MOVE im_path TO lv_folder_path.
+    MOVE im_hdl TO w_hdl.
+
+    REFRESH: li_text[].
+    CONCATENATE 'cd' lv_folder_path INTO lv_cmd SEPARATED BY space.
+    CALL FUNCTION 'FTP_COMMAND'
+      EXPORTING
+        handle        = w_hdl
+        command       = lv_cmd
+      TABLES
+        data          = li_text
+      EXCEPTIONS
+        command_error = 1
+        tcpip_error   = 2
+        data_error    = 3
+        OTHERS        = 4.
+
+    CALL FUNCTION 'FTP_COMMAND'
+      EXPORTING
+        handle        = w_hdl
+        command       = 'set passive on'
+      TABLES
+        data          = li_text
+      EXCEPTIONS
+        tcpip_error   = 1
+        command_error = 2
+        data_error    = 3
+        OTHERS        = 4.
+
+    exi_text[] = li_text[].
+
+  ENDMETHOD.
+
+  METHOD handle_put.
+
+    DATA: lv_cmd(80)   TYPE c,
+          lv_work_file TYPE char200.
+    DATA: li_text TYPE truxs_t_text_data.
+
+    MOVE im_work_file TO lv_work_file.
+
+    CLEAR lv_cmd.
+    CONCATENATE 'put' lv_work_file INTO lv_cmd SEPARATED BY space.
+
+    CALL FUNCTION 'FTP_COMMAND'
+      EXPORTING
+        handle        = im_hdl
+        command       = lv_cmd
+      TABLES
+        data          = li_text
+      EXCEPTIONS
+        tcpip_error   = 1
+        command_error = 2
+        data_error    = 3
+        OTHERS        = 6.
+
+    DELETE DATASET lv_work_file.
+    IF sy-subrc <> 0.
+      MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+      WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+    ELSE.
+      ex_success_flag = abap_true.
+
+    ENDIF.
+
+    IF li_text[] IS  NOT INITIAL.
+      exi_text[] = li_text[].
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD check_file_name_format.
+
+    DATA:lv_file                TYPE text250,
+         lv_file_name           TYPE text250,
+         lv_is_filename_correct TYPE abap_bool,
+         lv_only_move.
+    DATA: li_split TYPE TABLE OF text50.
+
+    MOVE im_file_name TO lv_file.
+
+
+*- start from character 49 -------------------------*
+    lv_file_name  = lv_file+49. "file name located started from char 49
+
+*- error handling space character -------------------------*
+    SPLIT lv_file_name AT ' ' INTO TABLE li_split.
+    IF lines( li_split ) GT 1.
+      lv_only_move = abap_true.
+    ENDIF.
+
+*- split get file name info -------------------------*
+    REFRESH li_split.
+    SPLIT lv_file_name  AT '-' INTO TABLE li_split.
+
+*- File name exist
+    lv_is_filename_correct = abap_true.
+    ex_file_name = lv_file_name.
+    ex_is_acknowledge = abap_true.
+    ex_is_resp_id_billing = lv_is_filename_correct.
+
+  ENDMETHOD.
+
+  METHOD handle_file_content.
+
+    DATA: li_result TYPE truxs_t_text_data.
+    DATA: lv_handle     TYPE i,
+          lv_bloblength TYPE i.
+
+    MOVE im_hdl TO lv_handle.
+
+    REFRESH: li_result[].
+    CALL FUNCTION 'FTP_COMMAND'
+      EXPORTING
+        handle        = lv_handle
+        command       = 'set passive on'
+      TABLES
+        data          = li_result
+      EXCEPTIONS
+        tcpip_error   = 1
+        command_error = 2
+        data_error    = 3
+        OTHERS        = 4.
+    IF sy-subrc <> 0.
+*      RAISE not_connect .
+      EXIT.
+    ENDIF.
+
+    REFRESH: li_result[].
+    CALL FUNCTION 'FTP_SERVER_TO_R3'
+      EXPORTING
+        handle         = lv_handle
+        fname          = im_file_name
+        character_mode = 'X'
+      IMPORTING
+        blob_length    = lv_bloblength
+      TABLES
+*       blob           = gv_blob
+        text           = li_result
+      EXCEPTIONS
+        tcpip_error    = 1
+        command_error  = 2
+        data_error     = 3
+        OTHERS         = 6.
+
+    exi_CONTENT = LI_RESULT[].
+
+  ENDMETHOD.
+
+  METHOD handle_file_processed.
+
+    DATA: lc_folderdest       TYPE char20 VALUE '/file_processed/',
+          lv_cmd(80)          TYPE c,
+          lv_folder_path(100) TYPE c,
+          lv_hdl              TYPE i,
+          lv_file_name        TYPE text250.
+    DATA: li_data       TYPE truxs_t_text_data,
+          lw_ftp_config TYPE zta_ftpconfig.
+
+    MOVE im_file_name TO lv_file_name.
+    MOVE im_hdl TO lv_hdl.
+    MOVE imw_ftp_config TO lw_ftp_config.
+
+    "move into destination path
+    REPLACE '/FILE_RECEIVED' IN lw_ftp_config-cfolder
+    WITH lc_folderdest.
+    CONCATENATE 'put' lv_file_name lw_ftp_config-cfolder
+    INTO lv_cmd SEPARATED BY space.
+
+    CLEAR lv_cmd.
+    CALL FUNCTION 'FTP_COMMAND'
+      EXPORTING
+        handle        = lv_hdl
+        command       = lv_cmd
+      TABLES
+        data          = li_data
+      EXCEPTIONS
+        tcpip_error   = 1
+        command_error = 2
+        data_error    = 3
+        OTHERS        = 6.
+
+    "delete existing
+    CLEAR lv_cmd.
+    CONCATENATE 'delete' lv_file_name INTO lv_cmd SEPARATED BY space.
+    CALL FUNCTION 'FTP_COMMAND'
+      EXPORTING
+        handle        = lv_hdl
+        command       = lv_cmd
+      TABLES
+        data          = li_data
+      EXCEPTIONS
+        tcpip_error   = 1
+        command_error = 2
+        data_error    = 3
+        OTHERS        = 6.
+
+
+    exi_data[] = li_data[].
+
+  ENDMETHOD.
+
+ENDCLASS.
