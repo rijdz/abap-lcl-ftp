@@ -1,5 +1,13 @@
 # abap-lcl-ftp
 ABAP Local Class for Handling FTP
+
+## SAPFTPA Config
+You need to create RFC destinations for FTP communications. There is a standard report for that purpose called:
+    'RSFTP005'(SAPFTP check)
+instead of configuring it manually via the transaction 'SM59'(Configurations of RFC connections),it automatically creates the following two RFC destinations:
+1.SAPFTP(For invoking the RFC library on the SAP GUI frontend)
+2.SAPFTPA(For invoking the RFC library on the SAP Netweaver AS ABAP host)
+
 ## Installation
 1. Create table ZTA_FTPCONFIG
 
